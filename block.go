@@ -5,10 +5,11 @@ import (
 )
 
 const (
-	minMatchLen = 3
-	maxMatchLen = 258
-	windowSize  = 32 * 1024
-	_blockSize  = 128 * 1024
+	minMatchLen  = 3
+	maxMatchLen  = 258
+	maxHashChain = 129
+	windowSize   = 32 * 1024
+	_blockSize   = 128 * 1024
 )
 
 type Sequence struct {
@@ -68,7 +69,60 @@ func (b *Block) Decode(hits []byte) ([]byte, error) {
 	return buf[len(hits):], nil
 }
 
-func compressNaive(hits, src []byte) Block {
+func compressHC(hits, src []byte, minMatch int, maxChain ...int) Block {
+	b := Block{}
+	totalSize := len(hits) + len(src)
+	buf := make([]byte, totalSize)
+
+	if maxChain == nil {
+		maxChain = []int{maxHashChain}
+	}
+
+	chain := HashChain{MaxChain: maxChain[0]}
+
+	copy(buf, hits)
+	copy(buf[len(hits):], src)
+
+	for i := max(0, len(hits)-windowSize); i < len(hits); i++ {
+		chain.Insert(buf, i)
+	}
+
+	cur := len(hits)
+	litStart := cur
+
+	for cur < totalSize {
+		bestLen, bestOff := chain.longestMatch(buf, cur)
+		chain.Insert(buf, cur)
+
+		if bestLen >= minMatch {
+			b.Literals = append(b.Literals, buf[litStart:cur]...)
+			b.Seqs = append(b.Seqs, Sequence{
+				LitLen:   uint32(cur - litStart),
+				MatchLen: uint32(bestLen),
+				Offset:   uint32(bestOff),
+			})
+
+			for c := cur + 1; c < cur+bestLen; c++ {
+				chain.Insert(buf, c)
+			}
+
+			cur += bestLen
+			litStart = cur
+
+			continue
+		}
+
+		cur++
+	}
+
+	tail := buf[litStart:]
+	b.Literals = append(b.Literals, tail...)
+	b.TailLen = uint32(len(tail))
+
+	return b
+}
+
+func compressNaive(hits, src []byte, minMatch int) Block {
 	b := Block{}
 
 	totalSize := len(hits) + len(src)
@@ -83,7 +137,7 @@ func compressNaive(hits, src []byte) Block {
 	for cur < totalSize {
 		bestLen, bestOff := longestMatch(cur, buf)
 
-		if bestLen >= minMatchLen {
+		if bestLen >= minMatch {
 			b.Literals = append(b.Literals, buf[litStart:cur]...)
 			b.Seqs = append(b.Seqs, Sequence{
 				LitLen:   uint32(cur - litStart),
