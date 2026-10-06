@@ -6,38 +6,14 @@ import (
 	"errors"
 )
 
-type blockType uint8
-
-const (
-	typeRaw blockType = iota
-	typeRLE
-	typeCompressed
-)
-
 const (
 	headerSize = 8
 	seqSize    = 12
 )
 
 var (
-	ErrBadMagic   = errors.New("lz77: bad magic")
-	ErrBadVersion = errors.New("lz77: unsupported version")
-	ErrClosed     = errors.New("lz77: write after close")
-	ErrCorrupt    = errors.New("lz77: corrupt block")
+	ErrCorrupt = errors.New("lz77: corrupt block")
 )
-
-func putBlockHeader(dst []byte, last bool, t blockType, size int) {
-	v := uint32(size)<<3 | uint32(t)<<1
-	if last {
-		v |= 1
-	}
-	dst[0], dst[1], dst[2] = byte(v), byte(v>>8), byte(v>>16)
-}
-
-func parseBlockHeader(src []byte) (last bool, t blockType, size int) {
-	v := uint32(src[0]) | uint32(src[1])<<8 | uint32(src[2])<<16
-	return v&1 == 1, blockType(v >> 1 & 3), int(v >> 3)
-}
 
 func appendCompressedBody(dst []byte, b *Block) ([]byte, error) {
 	var sumLitLen uint64
