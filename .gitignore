@@ -48,3 +48,8 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+
+code.txt
+big.txt
+
+/testdata
