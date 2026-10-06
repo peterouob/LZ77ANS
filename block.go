@@ -1,11 +1,14 @@
 package block
 
-import "errors"
+import (
+	"errors"
+)
 
 const (
 	minMatchLen = 3
 	maxMatchLen = 258
 	windowSize  = 32 * 1024
+	_blockSize  = 128 * 1024
 )
 
 type Sequence struct {
@@ -63,4 +66,63 @@ func (b *Block) Decode(hits []byte) ([]byte, error) {
 
 	buf = append(buf, lits...)
 	return buf[len(hits):], nil
+}
+
+func compressNaive(hits, src []byte) Block {
+	b := Block{}
+
+	totalSize := len(hits) + len(src)
+	buf := make([]byte, totalSize)
+
+	copy(buf, hits)
+	copy(buf[len(hits):], src)
+
+	cur := len(hits)
+	litStart := cur
+
+	for cur < totalSize {
+		bestLen, bestOff := longestMatch(cur, buf)
+
+		if bestLen >= minMatchLen {
+			b.Literals = append(b.Literals, buf[litStart:cur]...)
+			b.Seqs = append(b.Seqs, Sequence{
+				LitLen:   uint32(cur - litStart),
+				MatchLen: uint32(bestLen),
+				Offset:   uint32(bestOff),
+			})
+
+			cur += bestLen
+			litStart = cur
+
+			continue
+		}
+
+		cur++
+	}
+
+	tail := buf[litStart:]
+	b.Literals = append(b.Literals, tail...)
+	b.TailLen = uint32(len(tail))
+
+	return b
+}
+
+func longestMatch(cur int, buf []byte) (bestLen, bestOff int) {
+	maxLen := max(0, cur-windowSize)
+
+	for prev := cur - 1; prev >= maxLen; prev-- {
+		n := 0
+		for (cur+n) < len(buf) && n < maxMatchLen && buf[prev+n] == buf[cur+n] {
+			n++
+		}
+
+		if n > bestLen {
+			bestLen, bestOff = n, cur-prev
+		}
+
+		if bestLen > maxMatchLen {
+			break
+		}
+	}
+	return
 }
