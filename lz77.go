@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"slices"
 )
 
 const (
@@ -11,9 +12,7 @@ const (
 	seqSize    = 12
 )
 
-var (
-	ErrCorrupt = errors.New("lz77: corrupt block")
-)
+var ErrCorrupt = errors.New("lz77: corrupt block")
 
 func appendCompressedBody(dst []byte, b *Block) ([]byte, error) {
 	var sumLitLen uint64
@@ -34,7 +33,7 @@ func appendCompressedBody(dst []byte, b *Block) ([]byte, error) {
 		dst = binary.LittleEndian.AppendUint32(dst, seq.Offset)
 	}
 
-	dst = append(dst, b.Literals...)
+	dst = slices.Concat(dst, b.Literals)
 
 	return dst, nil
 }

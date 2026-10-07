@@ -2,6 +2,7 @@ package block
 
 import (
 	"errors"
+	"slices"
 )
 
 const (
@@ -9,7 +10,7 @@ const (
 	maxMatchLen  = 258
 	maxHashChain = 129
 	windowSize   = 32 * 1024
-	_blockSize   = 128 * 1024
+	blockSize    = 128 * 1024
 )
 
 type Sequence struct {
@@ -36,7 +37,7 @@ func (b *Block) Decode(hits []byte) ([]byte, error) {
 		hits = hits[len(hits)-windowSize:]
 	}
 
-	buf := append([]byte(nil), hits...)
+	buf := slices.Concat(hits)
 	lits := b.Literals
 
 	for _, seq := range b.Seqs {
@@ -44,7 +45,7 @@ func (b *Block) Decode(hits []byte) ([]byte, error) {
 			return nil, ErrLiterLensOverflow
 		}
 
-		buf = append(buf, lits[:seq.LitLen]...)
+		buf = slices.Concat(buf, lits[:seq.LitLen])
 		lits = lits[seq.LitLen:]
 
 		if seq.MatchLen > maxMatchLen || seq.MatchLen < minMatchLen {
@@ -65,7 +66,7 @@ func (b *Block) Decode(hits []byte) ([]byte, error) {
 		return nil, ErrTailLensNotEqual
 	}
 
-	buf = append(buf, lits...)
+	buf = slices.Concat(buf, lits)
 	return buf[len(hits):], nil
 }
 
@@ -95,7 +96,7 @@ func compressHC(hits, src []byte, minMatch int, maxChain ...int) Block {
 		chain.Insert(buf, cur)
 
 		if bestLen >= minMatch {
-			b.Literals = append(b.Literals, buf[litStart:cur]...)
+			b.Literals = slices.Concat(b.Literals, buf[litStart:cur])
 			b.Seqs = append(b.Seqs, Sequence{
 				LitLen:   uint32(cur - litStart),
 				MatchLen: uint32(bestLen),
@@ -116,7 +117,7 @@ func compressHC(hits, src []byte, minMatch int, maxChain ...int) Block {
 	}
 
 	tail := buf[litStart:]
-	b.Literals = append(b.Literals, tail...)
+	b.Literals = slices.Concat(b.Literals, tail)
 	b.TailLen = uint32(len(tail))
 
 	return b
@@ -138,12 +139,14 @@ func compressNaive(hits, src []byte, minMatch int) Block {
 		bestLen, bestOff := longestMatch(cur, buf)
 
 		if bestLen >= minMatch {
-			b.Literals = append(b.Literals, buf[litStart:cur]...)
+			b.Literals = slices.Concat(b.Literals, buf[litStart:cur])
 			b.Seqs = append(b.Seqs, Sequence{
 				LitLen:   uint32(cur - litStart),
 				MatchLen: uint32(bestLen),
 				Offset:   uint32(bestOff),
 			})
+
+			b.Seqs = slices.Concat(b.Seqs)
 
 			cur += bestLen
 			litStart = cur
@@ -155,7 +158,7 @@ func compressNaive(hits, src []byte, minMatch int) Block {
 	}
 
 	tail := buf[litStart:]
-	b.Literals = append(b.Literals, tail...)
+	b.Literals = slices.Concat(b.Literals, tail)
 	b.TailLen = uint32(len(tail))
 
 	return b
