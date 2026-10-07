@@ -131,6 +131,30 @@ func measure(t *testing.T, data []byte, minMatch int) (st stats) {
 	return
 }
 
+func measureHC(t *testing.T, data []byte, minMatch int) (st stats) {
+	const blockSize = 128 << 10
+	var hist []byte
+	for off := 0; off < len(data); off += blockSize {
+		src := data[off:min(off+blockSize, len(data))]
+		blk := compressHC(hist, src, minMatch)
+
+		got, err := blk.Decode(hist)
+		if err != nil || !bytes.Equal(got, src) {
+			t.Fatalf("block @%d round-trip failed：%v", off, err)
+		}
+
+		st.literals += len(blk.Literals)
+		st.seqs += len(blk.Seqs)
+		for _, s := range blk.Seqs {
+			st.matchBytes += int(s.MatchLen)
+		}
+		end := off + len(src)
+		hist = data[max(0, end-windowSize):end]
+	}
+	st.in = len(data)
+	return
+}
+
 func TestMeasure_Naive(t *testing.T) {
 	path := os.Getenv("LZ77_CORPUS")
 	if path == "" {
@@ -144,6 +168,34 @@ func TestMeasure_Naive(t *testing.T) {
 	for _, mm := range []int{3, 4, 5} {
 		start := time.Now()
 		st := measure(t, data, mm)
+		el := time.Since(start)
+
+		bits := st.literals*9 + st.seqs*24 // cost for spec
+		t.Logf("minMatch=%d ratio=%.4f seqs=%d avgMatch=%.1f literals=%d time=%v (%.3f MB/s)",
+			mm,
+			float64(bits)/8/float64(st.in),
+			st.seqs,
+			float64(st.matchBytes)/float64(max(st.seqs, 1)),
+			st.literals,
+			el.Round(time.Millisecond),
+			float64(st.in)/1e6/el.Seconds(),
+		)
+	}
+}
+
+func TestMeasure_HC(t *testing.T) {
+	path := os.Getenv("LZ77_CORPUS")
+	if path == "" {
+		t.Skip("need to set LZ77 destination")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mm := range []int{3, 4, 5} {
+		start := time.Now()
+		st := measureHC(t, data, mm)
 		el := time.Since(start)
 
 		bits := st.literals*9 + st.seqs*24 // cost for spec
