@@ -2,6 +2,9 @@ package block
 
 import (
 	"bytes"
+	"errors"
+	"io"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,5 +52,32 @@ func TestReader_Header(t *testing.T) {
 }
 
 func FuzzHeader(f *testing.F) {
-	f.Add()
+	compress := func(src []byte) []byte {
+		var buf bytes.Buffer
+		w := NewWriter(&buf)
+		if _, err := w.Write(src); err != nil {
+			f.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			f.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+
+	f.Add(compress(nil))
+	f.Add(compress([]byte("hello hello")))
+	f.Add(compress(bytes.Repeat([]byte("abcab"), blockSize/5+7)))
+
+	header := []byte(MAGIC + string(rune(VERSION)))
+	f.Add(header[:3])
+	f.Add(slices.Concat(header, []byte{1, 0}))
+	f.Add(slices.Concat(header, []byte{0xff, 0xff, 0xff, 0xff}))
+	f.Add(slices.Concat(header, []byte{10, 0, 0, 0}, []byte{1}))
+
+	f.Fuzz(func(t *testing.T, a []byte) {
+		_, err := io.ReadAll(NewReader(bytes.NewReader(a)))
+		if err != nil && !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
 }

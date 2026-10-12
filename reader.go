@@ -3,6 +3,7 @@ package block
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 )
@@ -39,8 +40,15 @@ func (r *Reader) readHeader() error {
 	}
 
 	header := make([]byte, headerLen)
-	if _, err := io.ReadFull(r.r, header); err != nil {
-		return err
+	if n, err := io.ReadFull(r.r, header); err != nil {
+		switch {
+		case errors.Is(err, io.EOF) || n == 0:
+			return io.EOF
+		case errors.Is(err, io.ErrUnexpectedEOF):
+			return ErrCorrupt
+		default:
+			return err
+		}
 	}
 
 	if err := verify(header); err != nil {
@@ -108,8 +116,8 @@ func (r *Reader) readBlock() error {
 }
 
 var (
-	ErrMagic   = errors.New("reader: error on magic in header")
-	ErrVersion = errors.New("reader: error on version in header")
+	ErrMagic   = fmt.Errorf("%w: bad magic in header", ErrCorrupt)
+	ErrVersion = fmt.Errorf("%w: bad version in header", ErrCorrupt)
 )
 
 func verify(header []byte) error {
