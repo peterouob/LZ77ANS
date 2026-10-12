@@ -2,6 +2,7 @@ package block
 
 import (
 	"bytes"
+	"io"
 	"math"
 	"os"
 	"testing"
@@ -11,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func FuzzRoundTripNavie(f *testing.F) {
+func FuzzRoundTripHC(f *testing.F) {
 	f.Add([]byte(""), []byte("abcabcabcX"))
 	f.Add([]byte("xyz"), []byte("xyzxyzxyz"))
 
@@ -20,7 +21,7 @@ func FuzzRoundTripNavie(f *testing.F) {
 			src = src[:4<<10]
 		}
 
-		blk := compressNaive(hist, src, 3)
+		blk := compressHC(hist, src, 3)
 		got, err := blk.Decode(hist)
 		if err != nil {
 			t.Fatalf("decode error: %v", err)
@@ -31,24 +32,6 @@ func FuzzRoundTripNavie(f *testing.F) {
 	})
 }
 
-func FuzzGreddyHashChain(f *testing.F) {
-	f.Add([]byte(""), []byte("abcabcabcX"))
-	f.Add([]byte("xyz"), []byte("xyzxyzxyz"))
-
-	f.Fuzz(func(t *testing.T, hist, src []byte) {
-		if len(src) > 4<<10 {
-			src = src[:4<<10]
-		}
-
-		greddyBlk := compressNaive(hist, src, 3)
-		hashChainBlk := compressHC(hist, src, 3, math.MaxInt)
-
-		assert.Equal(t, greddyBlk.Literals, hashChainBlk.Literals)
-		assert.Equal(t, greddyBlk.Seqs, hashChainBlk.Seqs)
-		assert.Equal(t, greddyBlk.TailLen, hashChainBlk.TailLen)
-	})
-}
-
 func TestCompressHC(t *testing.T) {
 	src := []byte("xyzxyzxyz")
 	hits := []byte("xy")
@@ -56,29 +39,6 @@ func TestCompressHC(t *testing.T) {
 	got, err := b.Decode(hits)
 	assert.Nil(t, err)
 	assert.Equal(t, got, src)
-}
-
-func TestCompressBlock(t *testing.T) {
-	src := []byte("xyzxyzxyz")
-	hits := []byte("xy")
-	b := compressNaive(hits, src, 3)
-	got, err := b.Decode(hits)
-	assert.Nil(t, err)
-	assert.Equal(t, got, src)
-}
-
-func TestLongestMatch(t *testing.T) {
-	buf := []byte{0, 1, 1, 1, 2, 2, 3, 4, 5, 3, 3, 3, 3, 3, 1}
-	l, off := longestMatch(10, buf)
-	if l != 4 || off != 1 {
-		t.Errorf("longestMatch(%d, %q) = %d, %d, want %d, %d", 0, buf, l, off, 4, 3)
-	}
-
-	buf = []byte{0, 1, 2, 3, 1, 2, 3}
-	l, off = longestMatch(4, buf)
-	if l != 3 || off != 3 {
-		t.Errorf("longestMatch(%d, %q) = %d, %d, want %d, %d", 0, buf, l, off, 3, 0)
-	}
 }
 
 func TestHashChainWindowEdge(t *testing.T) {
@@ -107,30 +67,6 @@ type stats struct {
 	in, literals, seqs, matchBytes int
 }
 
-func measure(t *testing.T, data []byte, minMatch int) (st stats) {
-	const blockSize = 128 << 10
-	var hist []byte
-	for off := 0; off < len(data); off += blockSize {
-		src := data[off:min(off+blockSize, len(data))]
-		blk := compressNaive(hist, src, minMatch)
-
-		got, err := blk.Decode(hist)
-		if err != nil || !bytes.Equal(got, src) {
-			t.Fatalf("block @%d round-trip failed：%v", off, err)
-		}
-
-		st.literals += len(blk.Literals)
-		st.seqs += len(blk.Seqs)
-		for _, s := range blk.Seqs {
-			st.matchBytes += int(s.MatchLen)
-		}
-		end := off + len(src)
-		hist = data[max(0, end-windowSize):end]
-	}
-	st.in = len(data)
-	return
-}
-
 func measureHC(t *testing.T, data []byte, minMatch int) (st stats) {
 	const blockSize = 128 << 10
 	var hist []byte
@@ -153,34 +89,6 @@ func measureHC(t *testing.T, data []byte, minMatch int) (st stats) {
 	}
 	st.in = len(data)
 	return
-}
-
-func TestMeasure_Naive(t *testing.T) {
-	path := os.Getenv("LZ77_CORPUS")
-	if path == "" {
-		t.Skip("need to set LZ77 destination")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, mm := range []int{3, 4, 5} {
-		start := time.Now()
-		st := measure(t, data, mm)
-		el := time.Since(start)
-
-		bits := st.literals*9 + st.seqs*24 // cost for spec
-		t.Logf("minMatch=%d ratio=%.4f seqs=%d avgMatch=%.1f literals=%d time=%v (%.3f MB/s)",
-			mm,
-			float64(bits)/8/float64(st.in),
-			st.seqs,
-			float64(st.matchBytes)/float64(max(st.seqs, 1)),
-			st.literals,
-			el.Round(time.Millisecond),
-			float64(st.in)/1e6/el.Seconds(),
-		)
-	}
 }
 
 func TestMeasure_HC(t *testing.T) {
@@ -209,4 +117,70 @@ func TestMeasure_HC(t *testing.T) {
 			float64(st.in)/1e6/el.Seconds(),
 		)
 	}
+}
+
+func TestStreamRoundTrip(t *testing.T) {
+	for _, size := range []int{0, 1, 100, blockSize - 1, blockSize, 3*blockSize + 7} {
+		src := make([]byte, size)
+		for i := range src {
+			src[i] = "abcab"[i%5] ^ byte(i/1000)
+		}
+
+		var buf bytes.Buffer
+		w := NewWriter(&buf)
+		for p := src; len(p) > 0; {
+			n := min(len(p), 777)
+			_, err := w.Write(p[:n])
+			require.NoError(t, err)
+			p = p[n:]
+		}
+		require.NoError(t, w.Close())
+
+		got, err := io.ReadAll(NewReader(&buf))
+		require.NoError(t, err)
+		assert.True(t, bytes.Equal(src, got), "size=%d", size)
+	}
+}
+
+func FuzzRoundTrip(f *testing.F) {
+	noise := make([]byte, 4096)
+	x := uint32(1)
+	for i := range noise {
+		x = x*1664525 + 1013904223
+		noise[i] = byte(x >> 24)
+	}
+
+	periodic := func(n int) []byte {
+		return bytes.Repeat([]byte("abcab"), n/5+1)[:n]
+	}
+
+	f.Add([]byte{}, uint16(1))
+	f.Add([]byte("a"), uint16(0))
+	f.Add([]byte("hello hello hello"), uint16(1))
+	f.Add([]byte("hello hello hello"), uint16(1000))
+	f.Add(noise, uint16(777))
+
+	f.Add(periodic(blockSize-1), uint16(777))
+	f.Add(periodic(blockSize), uint16(65535))
+	f.Add(periodic(blockSize+1), uint16(65535))
+	f.Add(periodic(2*blockSize+7), uint16(4096))
+
+	f.Fuzz(func(t *testing.T, data []byte, chunk uint16) {
+		size := max(int(chunk), 1)
+		var buf bytes.Buffer
+		w := NewWriter(&buf)
+
+		for p := data; len(p) > 0; {
+			n := min(len(p), size)
+			_, err := w.Write(p[:n])
+			assert.Nil(t, err)
+			p = p[n:]
+		}
+
+		err := w.Close()
+		assert.Nil(t, err)
+		got, err := io.ReadAll(NewReader(&buf))
+		assert.Nil(t, err)
+		assert.Equal(t, got, data)
+	})
 }
