@@ -23,6 +23,8 @@ type Block struct {
 	Literals []byte
 	Seqs     []Sequence
 	TailLen  uint32
+
+	checkSum CRC
 }
 
 var (
@@ -145,5 +147,6 @@ func compressHC(hits, src []byte, minMatch int, maxChain ...int) Block {
 	b.Literals = slices.Concat(b.Literals, tail)
 	b.TailLen = uint32(len(tail))
 
+	b.checkSum = CRC(NewCRC(src).Value())
 	return b
 }
