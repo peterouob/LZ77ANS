@@ -104,6 +104,10 @@ func (r *Reader) readBlock() error {
 		return err
 	}
 
+	if NewCRC(origin).Value() != uint32(block.checkSum) {
+		return ErrChecksum
+	}
+
 	r.out = origin
 
 	r.hist = slices.Concat(r.hist, origin)
@@ -116,8 +120,9 @@ func (r *Reader) readBlock() error {
 }
 
 var (
-	ErrMagic   = fmt.Errorf("%w: bad magic in header", ErrCorrupt)
-	ErrVersion = fmt.Errorf("%w: bad version in header", ErrCorrupt)
+	ErrMagic    = fmt.Errorf("%w: bad magic in header", ErrCorrupt)
+	ErrVersion  = fmt.Errorf("%w: bad version in header", ErrCorrupt)
+	ErrChecksum = fmt.Errorf("%w: checksum mismatch", ErrCorrupt)
 )
 
 func verify(header []byte) error {

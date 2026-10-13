@@ -33,7 +33,8 @@ func appendCompressedBody(dst []byte, b *Block) ([]byte, error) {
 		dst = binary.LittleEndian.AppendUint32(dst, seq.Offset)
 	}
 
-	dst = slices.Concat(dst, b.Literals)
+	checksum := binary.LittleEndian.AppendUint32(nil, uint32(b.checkSum))
+	dst = slices.Concat(dst, b.Literals, checksum)
 
 	return dst, nil
 }
@@ -48,7 +49,7 @@ func parseCompressedBody(body []byte) (*Block, error) {
 
 	lenInfo := headerSize + seqSize*seqCount
 
-	if lenInfo > uint64(len(body)) {
+	if lenInfo+4 > uint64(len(body)) {
 		return nil, ErrCorrupt
 	}
 
@@ -67,16 +68,19 @@ func parseCompressedBody(body []byte) (*Block, error) {
 		sumLitLen += uint64(seqs[i].LitLen)
 	}
 
-	lits := body[lenInfo:]
+	lits := body[lenInfo : len(body)-4]
 
 	if uint64(len(lits)) != sumLitLen+uint64(tailLen) {
 		return nil, ErrCorrupt
 	}
 
+	checkSum := binary.LittleEndian.Uint32(body[len(body)-4:])
+
 	b := &Block{
 		Literals: bytes.Clone(lits),
 		Seqs:     seqs,
 		TailLen:  tailLen,
+		checkSum: CRC(checkSum),
 	}
 
 	return b, nil

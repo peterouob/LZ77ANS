@@ -184,3 +184,17 @@ func FuzzRoundTrip(f *testing.F) {
 		assert.Equal(t, got, data)
 	})
 }
+
+func TestStreamDetectsChecksumMismatch(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	_, err := w.Write([]byte("hello hello hello"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	b := buf.Bytes()
+	b[len(b)-1] ^= 0xff
+
+	_, err = io.ReadAll(NewReader(bytes.NewReader(b)))
+	assert.ErrorIs(t, err, ErrChecksum)
+}
