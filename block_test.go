@@ -65,14 +65,36 @@ func TestHashChainWindowEdge(t *testing.T) {
 
 type stats struct {
 	in, literals, seqs, matchBytes int
+	c                              symCounts
+	ll                             [32]uint32 // litLen codes
+	extraBits                      int
 }
 
-func measureHC(t *testing.T, data []byte, minMatch int) (st stats) {
+func entropyBits(counts []uint32) (b float64) {
+	var total float64
+	for _, c := range counts {
+		total += float64(c)
+	}
+	for _, c := range counts {
+		if c > 0 {
+			b -= float64(c) * math.Log2(float64(c)/total)
+		}
+	}
+	return
+}
+
+func (st *stats) ratio() float64 {
+	bits := entropyBits(st.c.lit[:]) + entropyBits(st.c.ml[:]) +
+		entropyBits(st.c.of[:]) + entropyBits(st.ll[:]) + float64(st.extraBits)
+	return bits / 8 / float64(st.in)
+}
+
+func measure(t *testing.T, data []byte, minMatch int, compress func(hist, src []byte, minMatch int) Block) (st stats) {
 	const blockSize = 128 << 10
 	var hist []byte
 	for off := 0; off < len(data); off += blockSize {
 		src := data[off:min(off+blockSize, len(data))]
-		blk := compressHC(hist, src, minMatch)
+		blk := compress(hist, src, minMatch)
 
 		got, err := blk.Decode(hist)
 		if err != nil || !bytes.Equal(got, src) {
@@ -81,8 +103,18 @@ func measureHC(t *testing.T, data []byte, minMatch int) (st stats) {
 
 		st.literals += len(blk.Literals)
 		st.seqs += len(blk.Seqs)
+		for _, b := range blk.Literals {
+			st.c.lit[b]++
+		}
 		for _, s := range blk.Seqs {
 			st.matchBytes += int(s.MatchLen)
+			mc, mx := mlCode(int(s.MatchLen), minMatch)
+			oc, ox := offCode(int(s.Offset))
+			lc, lx := mlCode(int(s.LitLen), 0)
+			st.c.ml[mc]++
+			st.c.of[oc]++
+			st.ll[lc]++
+			st.extraBits += mx + ox + lx
 		}
 		end := off + len(src)
 		hist = data[max(0, end-windowSize):end]
@@ -91,7 +123,7 @@ func measureHC(t *testing.T, data []byte, minMatch int) (st stats) {
 	return
 }
 
-func TestMeasure_HC(t *testing.T) {
+func runMeasure(t *testing.T, compress func(hist, src []byte, minMatch int) Block) {
 	path := os.Getenv("LZ77_CORPUS")
 	if path == "" {
 		t.Skip("need to set LZ77 destination")
@@ -103,13 +135,12 @@ func TestMeasure_HC(t *testing.T) {
 
 	for _, mm := range []int{3, 4, 5} {
 		start := time.Now()
-		st := measureHC(t, data, mm)
+		st := measure(t, data, mm, compress)
 		el := time.Since(start)
 
-		bits := st.literals*9 + st.seqs*24 // cost for spec
 		t.Logf("minMatch=%d ratio=%.4f seqs=%d avgMatch=%.1f literals=%d time=%v (%.3f MB/s)",
 			mm,
-			float64(bits)/8/float64(st.in),
+			st.ratio(),
 			st.seqs,
 			float64(st.matchBytes)/float64(max(st.seqs, 1)),
 			st.literals,
@@ -117,6 +148,12 @@ func TestMeasure_HC(t *testing.T) {
 			float64(st.in)/1e6/el.Seconds(),
 		)
 	}
+}
+
+func TestMeasure_DP(t *testing.T) { runMeasure(t, compressDP) }
+
+func TestMeasure_HC(t *testing.T) {
+	runMeasure(t, func(hist, src []byte, mm int) Block { return compressHC(hist, src, mm) })
 }
 
 func TestStreamRoundTrip(t *testing.T) {

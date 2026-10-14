@@ -37,7 +37,7 @@ func (h *HashChain) longestMatch(buf []byte, cur int) (bestLen, bestOff int) {
 	}
 
 	limit := max(0, cur-windowSize)
-	chain := h.HashChainOpt.MaxChain
+	chain := h.MaxChain
 
 	for next := h.head[hash3(buf[cur:])]; next != 0 && chain > 0; chain-- {
 		cand := int(next) - 1
