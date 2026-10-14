@@ -3,6 +3,7 @@ package block
 import (
 	"math"
 	"math/bits"
+	"slices"
 )
 
 type match struct {
@@ -10,23 +11,18 @@ type match struct {
 	off uint32
 }
 
-// TODO: need to calculate again
-const (
-	numOfCode   = 32
-	numMatchLen = 258
-)
-
-type PriceReq struct {
-	lit []uint32
-	of  []uint32
-	ml  []uint32
+type Price struct {
+	minMatch int
+	lit      [256]uint32
+	of       [numOffCodes]uint32
+	ml       [numMLCodes]uint32
+	mlPrice  [maxMatchLen + 1]uint32
 }
 
-type Price struct {
-	lit     [256]uint32
-	of      [numOfCode]uint32
-	ml      [numMatchLen]uint32
-	mlPrice []uint32
+type symCounts struct {
+	lit [256]uint32
+	ml  [numMLCodes]uint32
+	of  [numOffCodes]uint32
 }
 
 const alpha = 0.5
@@ -43,36 +39,27 @@ func priceSmooth(counts, dst []uint32) {
 	}
 }
 
-func (p *Price) staticCount(req PriceReq, minMatch int) {
-	priceSmooth(req.lit, p.lit[:])
-	priceSmooth(req.of, p.of[:])
-	priceSmooth(req.ml, p.ml[:])
+func (p *Price) update(c *symCounts) {
+	priceSmooth(c.lit[:], p.lit[:])
+	priceSmooth(c.of[:], p.of[:])
+	priceSmooth(c.ml[:], p.ml[:])
 
-	if p.mlPrice == nil {
-		p.mlPrice = make([]uint32, maxMatchLen+1)
-	}
-
-	for l := minMatch; l <= maxMatchLen; l++ {
-		c, nx, _ := mlCode(l, minMatch)
+	for l := p.minMatch; l <= maxMatchLen; l++ {
+		c, nx := mlCode(l, p.minMatch)
 		p.mlPrice[l] = p.ml[c] + uint32(nx)*256
 	}
 }
 
-func (p *Price) initStatic(src []byte, minMatch int) {
-	var lit [256]uint32
-	var of [numOfCode]uint32
-	var ml [numMatchLen]uint32
-
+func (p *Price) initStatic(src []byte) {
+	var c symCounts
 	for _, b := range src {
-		lit[b]++
+		c.lit[b]++
 	}
-
-	parseReq := PriceReq{lit: lit[:], of: of[:], ml: ml[:]}
-	p.staticCount(parseReq, minMatch)
+	p.update(&c)
 }
 
 func (p *Price) offPrice(dist int) uint32 {
-	c, nx, _ := offCode(dist)
+	c, nx := offCode(dist)
 	return p.of[c] + uint32(nx)*256
 }
 
@@ -83,7 +70,7 @@ const (
 
 func findMatch(hits, src []byte, minMatch int) []match {
 	base, n := len(hits), len(src)
-	buf := make([]byte, n)
+	buf := make([]byte, base+n)
 	copy(buf, hits)
 	copy(buf[base:], src)
 
@@ -92,11 +79,12 @@ func findMatch(hits, src []byte, minMatch int) []match {
 		chain.Insert(buf, i)
 	}
 
-	ms := make([]match, 0, n)
+	ms := make([]match, n)
 
-	for i := range n {
+	for i := 0; i < n; i++ {
 		pos := base + i
 		posLen, posOff := chain.longestMatch(buf, pos)
+		chain.Insert(buf, pos)
 		if posLen < minMatch {
 			continue
 		}
@@ -115,12 +103,11 @@ func findMatch(hits, src []byte, minMatch int) []match {
 
 type node struct {
 	cost uint32
-	len  uint16
-	off  uint32
+	match
 }
 
-func parseDP(src []byte, ms []match, p *Price, minMatch int) []node {
-	n := len(src)
+func parseDP(src []byte, ms []match, p *Price) []node {
+	n, minMatch := len(src), p.minMatch
 	dp := make([]node, n+1)
 	for i := 1; i <= n; i++ {
 		dp[i].cost = math.MaxUint32
@@ -135,33 +122,64 @@ func parseDP(src []byte, ms []match, p *Price, minMatch int) []node {
 		m := ms[i]
 		l := int(m.len)
 
-		if l < minMatch {
+		if l < minMatch || l > maxMatchLen {
 			continue
 		}
 
 		base := c + p.offPrice(int(m.off))
 		if l < niceLen {
 			for j := minMatch; j <= l; j++ {
-				if nc := base + p.mlPrice[j]; nc < dp[j+1].cost {
-					dp[j+1] = node{
-						cost: nc,
-						len:  uint16(j),
-						off:  m.off,
-					}
+				if nc := base + p.mlPrice[j]; nc < dp[i+j].cost {
+					dp[i+j] = node{nc, match{uint16(j), m.off}}
 				}
 			}
 			continue
 		}
 
-		if nc := base + p.mlPrice[l]; nc < dp[i+1].cost {
-			dp[i+l] = node{
-				cost: nc,
-				len:  uint16(l),
-				off:  m.off,
-			}
+		if nc := base + p.mlPrice[l]; nc < dp[i+l].cost {
+			dp[i+l] = node{nc, m}
 		}
 	}
-	return dp[1:]
+	return dp
+}
+
+type token struct {
+	start int
+	match
+}
+
+func traceAndBuild(dp []node, src []byte) Block {
+	var tokens []token
+
+	for j := len(src); j > 0; {
+		nd := dp[j]
+		if nd.len == 0 {
+			j--
+			continue
+		}
+
+		j -= int(nd.len)
+		tokens = append(tokens, token{j, nd.match})
+	}
+
+	slices.Reverse(tokens)
+
+	var b Block
+	pos := 0
+
+	for _, tok := range tokens {
+		b.Literals = append(b.Literals, src[pos:tok.start]...)
+		b.Seqs = append(b.Seqs, Sequence{
+			LitLen:   uint32(tok.start - pos),
+			MatchLen: uint32(tok.len),
+			Offset:   tok.off,
+		})
+
+		pos = tok.start + int(tok.len)
+	}
+
+	b.Literals = append(b.Literals, src[pos:]...)
+	return b
 }
 
 // TODO: need to re eslitmate
@@ -172,20 +190,58 @@ const (
 )
 
 // mlCode let the match length of code transform to zstd
-func mlCode(l, minMatch int) (code, nExtra int, extra uint32) {
+func mlCode(l, minMatch int) (code, nExtra int) {
 	v := uint32(l - minMatch)
 	if v < mlDirect {
-		return int(v), 0, 0
+		return int(v), 0
 	}
 
 	nb := bits.Len32(v)
-	nExtra = nb - 1
-	return mlDirect + nb - 5, nExtra, v - (1 << nExtra)
+	return mlDirect + nb - 5, nb - 1
 }
 
-func offCode(dist int) (code, nExtra int, extra uint32) {
-	d := uint32(dist)
-	nb := bits.Len32(d)
-	nExtra = nb - 1
-	return nb - 1, nExtra, d - (1 << nExtra)
+// offCode: dist must be >= 1.
+func offCode(dist int) (code, nExtra int) {
+	nb := bits.Len32(uint32(dist))
+	return nb - 1, nb - 1
+}
+
+func countSymbols(b Block, minMatch int) (c symCounts) {
+	for _, l := range b.Literals {
+		c.lit[l]++
+	}
+
+	for _, s := range b.Seqs {
+		mc, _ := mlCode(int(s.MatchLen), minMatch)
+		c.ml[mc]++
+		oc, _ := offCode(int(s.Offset))
+		c.of[oc]++
+	}
+	return
+}
+
+func compressDP(hits, src []byte, minMatch int) Block {
+	if minMatch < 3 || len(src) > blockSize {
+		// TODO: avoid the panic
+		panic("invalid minMatch")
+	}
+
+	if len(src) == 0 {
+		return Block{}
+	}
+
+	ms := findMatch(hits, src, minMatch)
+	p := Price{minMatch: minMatch}
+	p.initStatic(src)
+
+	var b Block
+	for pass := range numPass {
+		dp := parseDP(src, ms, &p)
+		b = traceAndBuild(dp, src)
+		if pass+1 < numPass {
+			c := countSymbols(b, minMatch)
+			p.update(&c)
+		}
+	}
+	return b
 }
