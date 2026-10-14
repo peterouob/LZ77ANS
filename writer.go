@@ -16,6 +16,13 @@ const (
 
 var ErrClosed = errors.New("lw77: writer closed")
 
+type Level int
+
+const (
+	levelHC Level = iota
+	levelDP
+)
+
 type window struct {
 	buf  []byte
 	hist []byte
@@ -46,10 +53,16 @@ type Writer struct {
 	frame     []byte
 	err       error
 	hasHeader bool
+	level     Level
 }
 
-func NewWriter(w io.Writer) *Writer {
-	return &Writer{w: w}
+func NewWriter(w io.Writer, level ...Level) *Writer {
+	l := levelHC
+	if len(level) != 0 {
+		l = levelDP
+	}
+
+	return &Writer{w: w, level: l}
 }
 
 func (w *Writer) Write(p []byte) (int, error) {
@@ -120,7 +133,14 @@ func (w *Writer) writeBlock() error {
 		return err
 	}
 
-	block := compressHC(w.win.hist, w.win.buf, 3)
+	var block Block
+	switch w.level {
+	case 0:
+		block = compressHC(w.win.hist, w.win.buf, 3)
+	case 1:
+		block = compressDP(w.win.hist, w.win.buf, 3)
+	}
+
 	w.frame = slices.Grow(w.frame[:0], 4+maxBodyLen)
 	w.frame = w.frame[:4]
 	body, err := appendCompressedBody(w.frame, &block)

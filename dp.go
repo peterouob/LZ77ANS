@@ -179,6 +179,8 @@ func traceAndBuild(dp []node, src []byte) Block {
 	}
 
 	b.Literals = append(b.Literals, src[pos:]...)
+	b.TailLen = uint32(len(src) - pos)
+	b.checkSum = CRC(NewCRC(src).Value())
 	return b
 }
 
